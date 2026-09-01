@@ -6,7 +6,6 @@ import { Dana } from 'dana-node';
 const app = express();
 const port = Number(process.env.PORT || 3000);
 
-// Keep the raw body available for webhook verification/processing.
 app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf.toString('utf8'); } }));
 
 function required(name) {
@@ -26,6 +25,18 @@ function danaClient() {
   });
 }
 
+// DANA requires Jakarta time with an explicit +07:00 offset.
+function jakartaTime(minutesFromNow = 0) {
+  const date = new Date(Date.now() + minutesFromNow * 60_000);
+  const parts = new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Asia/Jakarta',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date).reduce((o, p) => ({ ...o, [p.type]: p.value }), {});
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}+07:00`;
+}
+
 app.get('/health', (_req, res) => {
   res.json({ ok: true, environment: process.env.DANA_ENV || 'sandbox' });
 });
@@ -38,8 +49,6 @@ app.post('/api/orders', async (req, res) => {
     }
 
     const partnerReferenceNo = `DEMO${Date.now()}${crypto.randomInt(100, 999)}`;
-    const now = new Date();
-    const validUpTo = new Date(now.getTime() + 10 * 60 * 1000).toISOString().replace('Z', '+07:00');
 
     const request = {
       partnerReferenceNo,
@@ -48,7 +57,7 @@ app.post('/api/orders', async (req, res) => {
         value: amount.toFixed(2),
         currency: 'IDR',
       },
-      validUpTo,
+      validUpTo: jakartaTime(10),
       urlParams: [
         {
           url: required('NOTIFY_URL'),
@@ -69,6 +78,7 @@ app.post('/api/orders', async (req, res) => {
             externalUserId: String(req.body.externalUserId || 'demo-user'),
           },
         },
+        mcc: process.env.DANA_MCC || '5814',
         envInfo: {
           sourcePlatform: 'IPG',
           terminalType: 'SYSTEM',
@@ -87,9 +97,8 @@ app.post('/api/orders', async (req, res) => {
 });
 
 app.post('/api/dana/notify', async (req, res) => {
-  // IMPORTANT: In production, verify the DANA webhook signature before
-  // changing an order's payment status. The official dana-node SDK provides
-  // WebhookParser for this purpose.
+  // TODO for production: verify X-SIGNATURE using DANA's WebhookParser and
+  // only then update the order status. Never trust an unverified webhook.
   console.log('DANA notification:', req.body);
   res.status(200).json({ received: true });
 });
